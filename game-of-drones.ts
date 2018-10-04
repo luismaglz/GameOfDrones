@@ -1,17 +1,15 @@
-declare function readline(): string;
-declare function print(value: string): void;
-declare function printErr(message: string): void;
+///<reference path="definitions.d.ts" />
 
 class GameInformation {
   playerCount: number;
   id: number;
   droneCount: number;
   zoneCount: number;
-  zones: Zone[];
+  zones: Array<Zone> = new Array<Zone>();
   drones: DroneTracking;
 
   constructor() {
-    var inputs = readline().split(' ');
+    var inputs = readline().split(" ");
     this.playerCount = parseInt(inputs[0]); // number of players in the game (2 to 4 players)
     this.id = parseInt(inputs[1]); // ID of your player (0, 1, 2, or 3)
     this.droneCount = parseInt(inputs[2]); // number of drones in each team (3 to 11)
@@ -26,14 +24,12 @@ class GameInformation {
   }
 
   initializeZones(): void {
-    this.zones = [];
-
     for (var i = 0; i < this.zoneCount; i++) {
-      const inputs = readline().split(' ');
+      const inputs = readline().split(" ");
       // corresponds to the position of the center of a zone. A zone is a circle with a radius of 100 units.
       const X = parseInt(inputs[0]);
       const Y = parseInt(inputs[1]);
-      this.zones.push(new Zone(X, Y, this.playerCount));
+      this.zones.push(new Zone(X, Y, this.playerCount, i));
     }
   }
 
@@ -44,9 +40,9 @@ class GameInformation {
       zone.isControlled = TID > 0;
       zone.isControlledByMe = TID === this.id;
       zone.resetCount();
-      // ID of the team controlling the zone (0, 1, 2, or 3) or -1 if it is not controlled. 
+      // ID of the team controlling the zone (0, 1, 2, or 3) or -1 if it is not controlled.
       // The zones are given in the same order as in the initialization.
-    })
+    });
   }
 
   updateDroneTracking(): void {
@@ -54,21 +50,24 @@ class GameInformation {
     // the following D lines those of the drones of player 1, and thus it continues until the last player.
     for (var player = 0; player < this.playerCount; player++) {
       for (var drone = 0; drone < this.droneCount; drone++) {
-        var inputs = readline().split(' ');
+        var inputs = readline().split(" ");
         var DX = parseInt(inputs[0]);
         var DY = parseInt(inputs[1]);
         if (this.drones[player][drone]) {
           this.drones[player][drone].x = DX;
           this.drones[player][drone].y = DY;
         } else {
-          this.drones[player][drone] = new Drone(DX, DY);
+          this.drones[player][drone] = new Drone(DX, DY, drone);
         }
         const d = this.drones[player][drone];
         const zone = this.zones.find(zone => {
-          return Helpers.isInZone(d, zone)
+          return Helpers.isInZone(d, zone);
         });
         if (zone) {
           zone.droneCounts[player]++;
+          d.currentZone = zone;
+        } else {
+          d.currentZone = null;
         }
       }
     }
@@ -77,30 +76,86 @@ class GameInformation {
     print(`${x} ${y}`);
   }
 
+  moveToZone(zone: Zone): string {
+    return `${zone.x} ${zone.y}`;
+  }
+
   moveDronesToClosestZone(): void {
     this.drones[this.id].forEach(drone => {
-      const freeZones = this.zones
-        .filter(zone => zone.isExposed() && !zone.isControlledByMe);
-      let closestFreeZone: Zone;
-      if (freeZones.length > 0) {
-        closestFreeZone =
-          freeZones.reduce((previous, next) => Helpers.getClosestZone(previous, next, drone), freeZones[0]);
-      }
-      if (closestFreeZone) {
-        this.moveDrone(closestFreeZone.x, closestFreeZone.y);
-      } else {
-        let closestImLosing: Zone;
-        const closestZonesImLosing = this.zones
-          .filter((zone) => Helpers.getZonesWhereOutnumbered(zone, this.id))
-        if (closestZonesImLosing.length > 0) {
-          closestImLosing = closestZonesImLosing.reduce((previous, next) => Helpers.getClosestZone(previous, next, drone), closestZonesImLosing[0]);
-          this.moveDrone(closestImLosing.x, closestImLosing.y);
-        } else {
-          this.moveDrone(drone.x, drone.y);
+      const closest = this.zones.sort((zone1, zone2) =>
+        Helpers.sortByClosestZone(zone1, zone2, drone)
+      )[0];
+      this.moveToZone(closest);
+    });
+  }
 
+  prioritizeAndMoveToEasiestZone(): Array<string> {
+    let orders: Array<string>;
+    const zonesTargeted = new Array<Zone>();
+
+    // Look for exposed zones
+    const exposedZones = this.zones.filter(
+      zone => zone.isExposed() && !zone.isControlledByMe
+    );
+
+    // The remaining drones should fight for other zones
+    const zonesThatIAmLosing = this.zones.filter(zone =>
+      Helpers.getZonesWhereOutnumbered(zone, this.id)
+    );
+
+    const tiedZones = this.zones.filter(zone => zone.getHighestOcupant() > 0 && zone.getHighestOcupant() === zone.getDroneCount(this.id));
+
+    orders = this.drones[this.id].map(drone => {
+
+      // Check if the drone is in a zone that is neutral, meaning that if it leaves the zone I will lose it
+      if (drone.currentZone !== null && !drone.currentZone.isControlled) {
+        return this.moveToZone(drone.currentZone);
+      }
+
+      // Target Exposed Zones
+      if (exposedZones.length > 0) {
+        exposedZones.sort((zone1, zone2) => Helpers.sortByClosestZone(zone1, zone2, drone));
+        const zone = exposedZones.shift();
+        return this.moveToZone(zone);
+      }
+
+      // Leave losing zone
+      if (drone.currentZone !== null && !drone.currentZone.isControlledByMe && drone.currentZone.getHighestOcupant() > drone.currentZone.getDroneCount(this.id)) {
+        //this drone is useless, it should help other people
+        if (tiedZones.length > 0) {
+          const closestTiedZone = tiedZones.reduce((zone1, zone2) => Helpers.getClosestZone(zone1, zone2, drone), tiedZones[0]);
+          return this.moveToZone(closestTiedZone);
         }
       }
+
+      // Go to tied zone
+      if(drone.currentZone === null) {
+        if (tiedZones.length > 0) {
+          const closestTiedZone = tiedZones.sort((zone1, zone2) => Helpers.sortByClosestZone(zone1, zone2, drone)).shift();
+          return this.moveToZone(closestTiedZone);
+        }
+      }
+
+      // Look for zones that i am losing, at this point only drones that are not esential should be available to me
+      // if (zonesThatIAmLosing.length > 0) {
+      //   zonesThatIAmLosing.sort((zone1, zone2) => Helpers.sortByClosestZone(zone1, zone2, drone));
+      //   const zoneIAmLosing = zonesThatIAmLosing.shift();
+      //   const highestOccupant = zoneIAmLosing.getHighestOcupant()
+      //   const mine = zoneIAmLosing.getDroneCount(this.id);
+      //   return this.moveToZone(zoneIAmLosing);
+      // }
+
+
+      // Fallback
+      const closestZone = this.zones.sort((zone1, zone2) => Helpers.sortByClosestZone(zone1, zone2, drone))[0];
+      return this.moveToZone(closestZone);
     })
+
+    return orders;
+  }
+
+  excecuteOrders(orders: Array<string>) {
+    orders.forEach(order => print(order));
   }
 }
 
@@ -131,6 +186,11 @@ class Helpers {
     const current = Helpers.calculateDistance(drone, zone);
     return previous < current ? previousZone : zone;
   }
+  public static sortByClosestZone(previousZone: Zone, zone: Zone, drone: Drone): number {
+    const previous = Helpers.calculateDistance(drone, previousZone);
+    const current = Helpers.calculateDistance(drone, zone);
+    return previous - current;
+  }
 }
 
 class Point {
@@ -148,12 +208,12 @@ class Zone extends Point {
   controlledBy: number;
   isControlled: boolean;
   isControlledByMe: boolean;
-  enemyDroneCount: number;
   droneCounts: number[];
 
-  constructor(x: number, y: number, pCount: number) {
+  constructor(x: number, y: number, pCount: number, id: number) {
     super(x, y);
     this.droneCounts = [];
+    this.id = id;
     for (var p = 0; p < pCount; p++) {
       this.droneCounts.push(0);
     }
@@ -163,14 +223,25 @@ class Zone extends Point {
     return this.droneCounts.reduce((a, b) => a + b, 0) === 0;
   }
 
+  getHighestOcupant(): number {
+    return this.droneCounts.reduce((a, b) => a > b ? a : b, this.droneCounts[0]);
+  }
+
+  getDroneCount(id: number): number {
+    return this.droneCounts[id];
+  }
+
   resetCount() {
     this.droneCounts = this.droneCounts.map(c => 0);
   }
 }
 
 class Drone extends Point {
-  constructor(x: number, y: number) {
+  currentZone: Zone = null;
+  id: number = null;
+  constructor(x: number, y: number, id: number) {
     super(x, y);
+    this.id = id;
   }
 }
 
@@ -184,5 +255,7 @@ const overlord = new GameInformation();
 while (true) {
   overlord.updateZoneControl();
   overlord.updateDroneTracking();
-  overlord.moveDronesToClosestZone();
+  const orders = overlord.prioritizeAndMoveToEasiestZone();
+  printErr(JSON.stringify(orders));
+  overlord.excecuteOrders(orders);
 }

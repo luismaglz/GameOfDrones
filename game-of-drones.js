@@ -1,8 +1,11 @@
-"use strict";
+///<reference path="definitions.d.ts" />
 var __extends = (this && this.__extends) || (function () {
-    var extendStatics = Object.setPrototypeOf ||
-        ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
-        function (d, b) { for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p]; };
+    var extendStatics = function (d, b) {
+        extendStatics = Object.setPrototypeOf ||
+            ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
+            function (d, b) { for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p]; };
+        return extendStatics(d, b);
+    }
     return function (d, b) {
         extendStatics(d, b);
         function __() { this.constructor = d; }
@@ -11,7 +14,8 @@ var __extends = (this && this.__extends) || (function () {
 })();
 var GameInformation = /** @class */ (function () {
     function GameInformation() {
-        var inputs = readline().split(' ');
+        this.zones = new Array();
+        var inputs = readline().split(" ");
         this.playerCount = parseInt(inputs[0]); // number of players in the game (2 to 4 players)
         this.id = parseInt(inputs[1]); // ID of your player (0, 1, 2, or 3)
         this.droneCount = parseInt(inputs[2]); // number of drones in each team (3 to 11)
@@ -23,13 +27,12 @@ var GameInformation = /** @class */ (function () {
         this.initializeZones();
     }
     GameInformation.prototype.initializeZones = function () {
-        this.zones = [];
         for (var i = 0; i < this.zoneCount; i++) {
-            var inputs = readline().split(' ');
+            var inputs = readline().split(" ");
             // corresponds to the position of the center of a zone. A zone is a circle with a radius of 100 units.
             var X = parseInt(inputs[0]);
             var Y = parseInt(inputs[1]);
-            this.zones.push(new Zone(X, Y, this.playerCount));
+            this.zones.push(new Zone(X, Y, this.playerCount, i));
         }
     };
     GameInformation.prototype.updateZoneControl = function () {
@@ -40,7 +43,7 @@ var GameInformation = /** @class */ (function () {
             zone.isControlled = TID > 0;
             zone.isControlledByMe = TID === _this.id;
             zone.resetCount();
-            // ID of the team controlling the zone (0, 1, 2, or 3) or -1 if it is not controlled. 
+            // ID of the team controlling the zone (0, 1, 2, or 3) or -1 if it is not controlled.
             // The zones are given in the same order as in the initialization.
         });
     };
@@ -49,7 +52,7 @@ var GameInformation = /** @class */ (function () {
         // the following D lines those of the drones of player 1, and thus it continues until the last player.
         for (var player = 0; player < this.playerCount; player++) {
             var _loop_1 = function () {
-                inputs = readline().split(' ');
+                inputs = readline().split(" ");
                 DX = parseInt(inputs[0]);
                 DY = parseInt(inputs[1]);
                 if (this_1.drones[player][drone]) {
@@ -57,7 +60,7 @@ var GameInformation = /** @class */ (function () {
                     this_1.drones[player][drone].y = DY;
                 }
                 else {
-                    this_1.drones[player][drone] = new Drone(DX, DY);
+                    this_1.drones[player][drone] = new Drone(DX, DY, drone);
                 }
                 var d = this_1.drones[player][drone];
                 var zone = this_1.zones.find(function (zone) {
@@ -65,6 +68,10 @@ var GameInformation = /** @class */ (function () {
                 });
                 if (zone) {
                     zone.droneCounts[player]++;
+                    d.currentZone = zone;
+                }
+                else {
+                    d.currentZone = null;
                 }
             };
             var this_1 = this, inputs, DX, DY;
@@ -76,32 +83,71 @@ var GameInformation = /** @class */ (function () {
     GameInformation.prototype.moveDrone = function (x, y) {
         print(x + " " + y);
     };
+    GameInformation.prototype.moveToZone = function (zone) {
+        return zone.x + " " + zone.y;
+    };
     GameInformation.prototype.moveDronesToClosestZone = function () {
         var _this = this;
         this.drones[this.id].forEach(function (drone) {
-            var freeZones = _this.zones
-                .filter(function (zone) { return zone.isExposed() && !zone.isControlledByMe; });
-            var closestFreeZone;
-            if (freeZones.length > 0) {
-                closestFreeZone =
-                    freeZones.reduce(function (previous, next) { return Helpers.getClosestZone(previous, next, drone); }, freeZones[0]);
-            }
-            if (closestFreeZone) {
-                _this.moveDrone(closestFreeZone.x, closestFreeZone.y);
-            }
-            else {
-                var closestImLosing = void 0;
-                var closestZonesImLosing = _this.zones
-                    .filter(function (zone) { return Helpers.getZonesWhereOutnumbered(zone, _this.id); });
-                if (closestZonesImLosing.length > 0) {
-                    closestImLosing = closestZonesImLosing.reduce(function (previous, next) { return Helpers.getClosestZone(previous, next, drone); }, closestZonesImLosing[0]);
-                    _this.moveDrone(closestImLosing.x, closestImLosing.y);
-                }
-                else {
-                    _this.moveDrone(drone.x, drone.y);
-                }
-            }
+            var closest = _this.zones.sort(function (zone1, zone2) {
+                return Helpers.sortByClosestZone(zone1, zone2, drone);
+            })[0];
+            _this.moveToZone(closest);
         });
+    };
+    GameInformation.prototype.prioritizeAndMoveToEasiestZone = function () {
+        var _this = this;
+        var orders;
+        var zonesTargeted = new Array();
+        // Look for exposed zones
+        var exposedZones = this.zones.filter(function (zone) { return zone.isExposed() && !zone.isControlledByMe; });
+        // The remaining drones should fight for other zones
+        var zonesThatIAmLosing = this.zones.filter(function (zone) {
+            return Helpers.getZonesWhereOutnumbered(zone, _this.id);
+        });
+        var tiedZones = this.zones.filter(function (zone) { return zone.getHighestOcupant() > 0 && zone.getHighestOcupant() === zone.getDroneCount(_this.id); });
+        orders = this.drones[this.id].map(function (drone) {
+            // Check if the drone is in a zone that is neutral, meaning that if it leaves the zone I will lose it
+            if (drone.currentZone !== null && !drone.currentZone.isControlled) {
+                return _this.moveToZone(drone.currentZone);
+            }
+            // Target Exposed Zones
+            if (exposedZones.length > 0) {
+                exposedZones.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); });
+                var zone = exposedZones.shift();
+                return _this.moveToZone(zone);
+            }
+            // Leave losing zone
+            if (drone.currentZone !== null && !drone.currentZone.isControlledByMe && drone.currentZone.getHighestOcupant() > drone.currentZone.getDroneCount(_this.id)) {
+                //this drone is useless, it should help other people
+                if (tiedZones.length > 0) {
+                    var closestTiedZone = tiedZones.reduce(function (zone1, zone2) { return Helpers.getClosestZone(zone1, zone2, drone); }, tiedZones[0]);
+                    return _this.moveToZone(closestTiedZone);
+                }
+            }
+            // Go to tied zone
+            if (drone.currentZone === null) {
+                if (tiedZones.length > 0) {
+                    var closestTiedZone = tiedZones.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); }).shift();
+                    return _this.moveToZone(closestTiedZone);
+                }
+            }
+            // Look for zones that i am losing, at this point only drones that are not esential should be available to me
+            // if (zonesThatIAmLosing.length > 0) {
+            //   zonesThatIAmLosing.sort((zone1, zone2) => Helpers.sortByClosestZone(zone1, zone2, drone));
+            //   const zoneIAmLosing = zonesThatIAmLosing.shift();
+            //   const highestOccupant = zoneIAmLosing.getHighestOcupant()
+            //   const mine = zoneIAmLosing.getDroneCount(this.id);
+            //   return this.moveToZone(zoneIAmLosing);
+            // }
+            // Fallback
+            var closestZone = _this.zones.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); })[0];
+            return _this.moveToZone(closestZone);
+        });
+        return orders;
+    };
+    GameInformation.prototype.excecuteOrders = function (orders) {
+        orders.forEach(function (order) { return print(order); });
     };
     return GameInformation;
 }());
@@ -134,6 +180,11 @@ var Helpers = /** @class */ (function () {
         var current = Helpers.calculateDistance(drone, zone);
         return previous < current ? previousZone : zone;
     };
+    Helpers.sortByClosestZone = function (previousZone, zone, drone) {
+        var previous = Helpers.calculateDistance(drone, previousZone);
+        var current = Helpers.calculateDistance(drone, zone);
+        return previous - current;
+    };
     return Helpers;
 }());
 var Point = /** @class */ (function () {
@@ -145,9 +196,10 @@ var Point = /** @class */ (function () {
 }());
 var Zone = /** @class */ (function (_super) {
     __extends(Zone, _super);
-    function Zone(x, y, pCount) {
+    function Zone(x, y, pCount, id) {
         var _this = _super.call(this, x, y) || this;
         _this.droneCounts = [];
+        _this.id = id;
         for (var p = 0; p < pCount; p++) {
             _this.droneCounts.push(0);
         }
@@ -156,6 +208,12 @@ var Zone = /** @class */ (function (_super) {
     Zone.prototype.isExposed = function () {
         return this.droneCounts.reduce(function (a, b) { return a + b; }, 0) === 0;
     };
+    Zone.prototype.getHighestOcupant = function () {
+        return this.droneCounts.reduce(function (a, b) { return a > b ? a : b; }, this.droneCounts[0]);
+    };
+    Zone.prototype.getDroneCount = function (id) {
+        return this.droneCounts[id];
+    };
     Zone.prototype.resetCount = function () {
         this.droneCounts = this.droneCounts.map(function (c) { return 0; });
     };
@@ -163,8 +221,12 @@ var Zone = /** @class */ (function (_super) {
 }(Point));
 var Drone = /** @class */ (function (_super) {
     __extends(Drone, _super);
-    function Drone(x, y) {
-        return _super.call(this, x, y) || this;
+    function Drone(x, y, id) {
+        var _this = _super.call(this, x, y) || this;
+        _this.currentZone = null;
+        _this.id = null;
+        _this.id = id;
+        return _this;
     }
     return Drone;
 }(Point));
@@ -178,5 +240,7 @@ var overlord = new GameInformation();
 while (true) {
     overlord.updateZoneControl();
     overlord.updateDroneTracking();
-    overlord.moveDronesToClosestZone();
+    var orders = overlord.prioritizeAndMoveToEasiestZone();
+    printErr(JSON.stringify(orders));
+    overlord.excecuteOrders(orders);
 }
