@@ -142,6 +142,7 @@ class GameInformation {
     drones.sort((d1, d2) => Helpers.calculateDistance(d1, zone) - Helpers.calculateDistance(d2, zone))
       .filter(drone => !drone.currentZone
         || (drone.currentZone.isControlledByMe && drone.currentZone.highestEnemeyCount === 0)
+        || (!drone.currentZone.isControlledByMe && drone.currentZone.overflow > 0)
         // || drone.currentZone === mostPolulatedTiedNotMine
       );
 

@@ -135,7 +135,8 @@ var GameInformation = /** @class */ (function () {
         var drones = this.drones[this.id].map(function (d) { return d; });
         drones.sort(function (d1, d2) { return Helpers.calculateDistance(d1, zone) - Helpers.calculateDistance(d2, zone); })
             .filter(function (drone) { return !drone.currentZone
-            || (drone.currentZone.isControlledByMe && drone.currentZone.highestEnemeyCount === 0); }
+            || (drone.currentZone.isControlledByMe && drone.currentZone.highestEnemeyCount === 0)
+            || (!drone.currentZone.isControlledByMe && drone.currentZone.overflow > 0); }
         // || drone.currentZone === mostPolulatedTiedNotMine
         );
         return drones;
