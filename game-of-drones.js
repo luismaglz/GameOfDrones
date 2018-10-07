@@ -19,10 +19,9 @@ var GameInformation = /** @class */ (function () {
         this.id = parseInt(inputs[1]); // ID of your player (0, 1, 2, or 3)
         this.droneCount = parseInt(inputs[2]); // number of drones in each team (3 to 11)
         this.zoneCount = parseInt(inputs[3]); // number of zones on the map (4 to 8)
-        this.drones = new DroneTracking();
-        for (var i = 0; i < this.playerCount; i++) {
-            this.drones[i] = [];
-        }
+        this.allDrones = [];
+        this.enemyDrones = [];
+        this.myDrones = [];
         this.initializeZones();
     }
     GameInformation.prototype.initializeZones = function () {
@@ -49,6 +48,9 @@ var GameInformation = /** @class */ (function () {
     };
     GameInformation.prototype.updateDroneTracking = function () {
         var _this = this;
+        this.allDrones = [];
+        this.enemyDrones = [];
+        this.myDrones = [];
         // The first D lines contain the coordinates of drones of a player with the ID 0,
         // the following D lines those of the drones of player 1, and thus it continues until the last player.
         for (var player = 0; player < this.playerCount; player++) {
@@ -56,14 +58,14 @@ var GameInformation = /** @class */ (function () {
                 inputs = readline().split(" ");
                 DX = parseInt(inputs[0]);
                 DY = parseInt(inputs[1]);
-                if (this_1.drones[player][drone]) {
-                    this_1.drones[player][drone].x = DX;
-                    this_1.drones[player][drone].y = DY;
+                var d = new Drone(DX, DY, drone, player);
+                this_1.allDrones.push(d);
+                if (player === this_1.id) {
+                    this_1.myDrones.push(d);
                 }
                 else {
-                    this_1.drones[player][drone] = new Drone(DX, DY, drone);
+                    this_1.enemyDrones.push(d);
                 }
-                var d = this_1.drones[player][drone];
                 var zone = this_1.zones.find(function (zone) {
                     return Helpers.isInZone(d, zone);
                 });
@@ -95,7 +97,7 @@ var GameInformation = /** @class */ (function () {
     };
     GameInformation.prototype.moveDronesToClosestZone = function () {
         var _this = this;
-        this.drones[this.id].forEach(function (drone) {
+        this.myDrones.forEach(function (drone) {
             var closest = _this.zones.sort(function (zone1, zone2) {
                 return Helpers.sortByClosestZone(zone1, zone2, drone);
             })[0];
@@ -112,7 +114,8 @@ var GameInformation = /** @class */ (function () {
         return this.zones.filter(function (zone) { return zone.isControlledByMe && zone.highestEnemeyCount > 0 && zone.highestEnemeyCount === zone.myDroneCount; });
     };
     GameInformation.prototype.getMine = function () {
-        return this.zones.filter(function (zone) { return zone.isControlledByMe && zone.highestEnemeyCount === 0; });
+        Helpers.log("Zones: " + this.zones.map(function (z) { return JSON.stringify({ cbm: z.isControlledByMe, c: z.highestEnemeyCount }); }));
+        return this.zones.filter(function (zone) { return zone.isControlledByMe; });
     };
     GameInformation.prototype.getTiedZonesNotMine = function () {
         return this.zones.filter(function (zone) { return zone.highestEnemeyCount > 0
@@ -126,13 +129,13 @@ var GameInformation = /** @class */ (function () {
         return this.zones.filter(function (zone) { return !zone.isControlledByMe && !zone.isExposed(); });
     };
     GameInformation.prototype.getClosestDrones = function (zone) {
-        var sortedDrones = this.drones[this.id].map(function (d) { return d; }).sort(function (d1, d2) { return Helpers.calculateDistance(d1, zone) - Helpers.calculateDistance(d2, zone); });
+        var sortedDrones = this.myDrones.map(function (d) { return d; }).sort(function (d1, d2) { return Helpers.calculateDistance(d1, zone) - Helpers.calculateDistance(d2, zone); });
         return sortedDrones;
     };
     GameInformation.prototype.getClosestAvailableDrone = function (zone) {
         var losingTiedZones = this.getTiedZonesNotMine();
         var mostPolulatedTiedNotMine = losingTiedZones.reduce(function (z1, z2) { return z1.overflow < z2.overflow ? z1 : z2; }, losingTiedZones[0]);
-        var drones = this.drones[this.id].map(function (d) { return d; });
+        var drones = this.myDrones.map(function (d) { return d; });
         drones.sort(function (d1, d2) { return Helpers.calculateDistance(d1, zone) - Helpers.calculateDistance(d2, zone); })
             .filter(function (drone) { return !drone.currentZone
             || (drone.currentZone.isControlledByMe && drone.currentZone.highestEnemeyCount === 0)
@@ -141,137 +144,106 @@ var GameInformation = /** @class */ (function () {
         );
         return drones;
     };
+    GameInformation.prototype.getClosestEnemyDroneDistance = function (zone) {
+        var enemies = this.enemyDrones
+            .map(function (d) { return d; })
+            .sort(function (d1, d2) { return Helpers.calculateDistance(d1, zone) - Helpers.calculateDistance(d2, zone); });
+        return enemies[0];
+    };
     GameInformation.prototype.sortByClosest = function (zones, drone) {
         return zones.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); });
     };
-    GameInformation.prototype.prioritizeAndMoveToEasiestZone = function () {
+    GameInformation.prototype.protectDronesSinglePass = function (zones, requested, orders) {
         var _this = this;
-        var orders;
-        var zonesTargeted = new Array();
-        // Look for exposed zones
-        var exposedZones = this.getExposedZones();
-        // The remaining drones should fight for other zones
-        var zonesThatIAmLosing = this.zones.filter(function (zone) {
-            return Helpers.getZonesWhereOutnumbered(zone, _this.id);
-        });
-        var tiedZones = this.zones.filter(function (zone) { return zone.getHighestOcupant(_this.id) > 0 && zone.getHighestOcupant(_this.id) === zone.getDroneCount(_this.id); });
-        orders = this.drones[this.id].map(function (drone) {
-            // Check if the drone is in a zone that is neutral, meaning that if it leaves the zone I will lose it
-            if (drone.currentZone !== null && drone.currentZone.isControlledByMe && drone.currentZone.overflow === 0 && _this.droneCount > 4) {
-                return _this.moveToZone(drone.currentZone);
-            }
-            // tied zone can be left
-            if (drone.currentZone && drone.currentZone.isControlledByMe && drone.currentZone.overflow > 0) {
-                drone.currentZone.overflow--;
-            }
-            // Leave losing zone
-            if (drone.currentZone !== null && !drone.currentZone.isControlledByMe && drone.currentZone.getHighestOcupant(_this.id) > drone.currentZone.getDroneCount(_this.id)) {
-                //this drone is useless, it should help other people
-                if (tiedZones.length > 0) {
-                    var closestTiedZone = tiedZones.reduce(function (zone1, zone2) { return Helpers.getClosestZone(zone1, zone2, drone); }, tiedZones[0]);
-                    return _this.moveToZone(closestTiedZone);
+        var requestedTracking = [];
+        if (zones.length > 0) {
+            zones.forEach(function (zone) {
+                Helpers.log("Requests " + JSON.stringify(requestedTracking));
+                var d = _this.getClosestDrones(zone)[0];
+                var ed = _this.getClosestEnemyDroneDistance(zone);
+                var fdistance = Helpers.calculateDistance(d, zone);
+                var edistance = Helpers.calculateDistance(ed, zone);
+                var request = requestedTracking.find(function (r) { return r.droneId === d.id; });
+                if (request && request.distance > fdistance) {
+                    request.distance = fdistance;
+                    request.droneId = d.id;
+                    request.zoneId = zone.id;
+                }
+                else if (requested.indexOf(d.id) === -1 && edistance - fdistance < 99) {
+                    requestedTracking.push({
+                        zoneId: zone.id,
+                        droneId: d.id,
+                        distance: fdistance
+                    });
+                    requested.push(d.id);
                 }
                 else {
-                    var leastAmmount = _this.zones.reduce(function (z1, z2) { return z1.getTotalDrones() < z2.getTotalDrones() ? z1 : z2; }, _this.zones[0]);
-                    return _this.moveToZone(leastAmmount);
+                    requested.push(d.id);
                 }
-            }
-            // If im the only one in the zone
-            if (drone.currentZone !== null && drone.currentZone.getTotalDrones() === 1) {
-                if (exposedZones.length > 0) {
-                    exposedZones.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); });
-                    var zone = exposedZones.shift();
-                    return _this.moveToZone(zone);
-                }
-            }
-            if (drone.currentZone !== null && drone.currentZone.getDroneCount(_this.id) === drone.currentZone.getTotalDrones() && drone.currentZone.getTotalDrones() > 1) {
-                if (exposedZones.length > 0) {
-                    exposedZones.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); });
-                    var zone = exposedZones.shift();
-                    return _this.moveToZone(zone);
-                }
-            }
-            // Target Exposed Zones
-            if (exposedZones.length > 0) {
-                exposedZones.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); });
-                var zone = exposedZones.shift();
-                return _this.moveToZone(zone);
-            }
-            // Go to tied zone
-            if (drone.currentZone === null) {
-                if (tiedZones.length > 0) {
-                    var closestTiedZone = tiedZones.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); }).shift();
-                    return _this.moveToZone(closestTiedZone);
-                }
-            }
-            //Look for zones that i am losing, at this point only drones that are not esential should be available to me
-            if (zonesThatIAmLosing.length > 0) {
-                zonesThatIAmLosing.sort(function (zone1, zone2) { return Helpers.sortByClosestZone(zone1, zone2, drone); });
-                var zoneIAmLosing = zonesThatIAmLosing.shift();
-                var highestOccupant = zoneIAmLosing.getHighestOcupant(_this.id);
-                var mine = zoneIAmLosing.getDroneCount(_this.id);
-                return _this.moveToZone(zoneIAmLosing);
-            }
-            // Fallback
-            var closestZone = _this.zones.reduce(function (zone1, zone2) { return Helpers.getClosestZone(zone1, zone2, drone); }, _this.zones[0]);
-            return _this.moveToZone(closestZone);
-        });
-        return orders;
+                Helpers.log("Zone " + zone.id + " Requested: " + d.id);
+                orders[d.id] = _this.moveToZone(zone);
+            });
+        }
+        Helpers.log("requested: " + requested.join('|'));
+        Helpers.log("------------------------------");
     };
-    GameInformation.prototype.goldStrategy = function () {
+    GameInformation.prototype.protectDronesMultiPass = function (zones, requested, orders) {
         var _this = this;
-        var exposedZones = this.getExposedZones();
-        var tiedNotMine = this.getTiedZonesNotMine();
-        var losingZones = this.getZonesIAmLosing();
-        var orders = this.drones[this.id].map(function (drone) {
-            var zone;
-            // drone cant leave
-            if (drone.currentZone && drone.currentZone.isControlledByMe && drone.currentZone.overflow === 0 && _this.droneCount > 4) {
-                return _this.moveToZone(drone.currentZone);
-            }
-            // tied zone can be left
-            if (drone.currentZone && drone.currentZone.isControlledByMe && drone.currentZone.overflow > 0) {
-                drone.currentZone.overflow--;
-            }
-            // target closest exposed zone
-            if (exposedZones.length > 0) {
-                zone = _this.sortByClosest(exposedZones, drone).shift();
-                return _this.moveToZone(zone);
-            }
-            // target tied zones not controlled by me
-            if (tiedNotMine.length > 0) {
-                zone = _this.sortByClosest(tiedNotMine, drone)[0];
-                return _this.moveToZone(zone);
-            }
-            //Zones im losing
-            if (losingZones.length > 0) {
-                zone = _this.sortByClosest(losingZones, drone)[0];
-                return _this.moveToZone(zone);
-            }
-            // Fallback
-            zone = _this.getClosestZone(drone);
-            return _this.moveToZone(zone);
-        });
-        return orders;
+        var requestedTracking = [];
+        Helpers.log("requested: " + requested.join('|'));
+        if (zones.length > 0) {
+            zones.forEach(function (zone) {
+                var d = _this.getClosestDrones(zone)[0];
+                var ed = _this.getClosestEnemyDroneDistance(zone);
+                var fdistance = Helpers.calculateDistance(d, zone);
+                var edistance = Helpers.calculateDistance(ed, zone);
+                var request = requestedTracking.find(function (r) { return r.droneId === d.id; });
+                do {
+                    if (requested.indexOf(d.id) === -1) {
+                        if (edistance - fdistance < 99) {
+                            requestedTracking.push({
+                                zoneId: zone.id,
+                                droneId: d.id,
+                                distance: fdistance
+                            });
+                            requested.push(d.id);
+                        }
+                    }
+                    else if (request && request.distance > fdistance) {
+                        request.distance = fdistance;
+                        request.droneId = d.id;
+                        request.zoneId = zone.id;
+                    }
+                } while (requested.length < _this.droneCount);
+                Helpers.log("Zone " + zone.id + " Requested: " + d.id);
+                orders[d.id] = _this.moveToZone(zone);
+            });
+        }
+        Helpers.log("requested: " + requested.join('|'));
+        Helpers.log("------------------------------");
     };
     GameInformation.prototype.pointsAttracting = function () {
         var _this = this;
-        var orders = this.drones[this.id].map(function (drone) { return _this.moveToZone(_this.getClosestZone(drone)); });
+        var orders = this.myDrones.map(function (drone) { return _this.moveToZone(_this.getClosestZone(drone)); });
         var requestedDrones = [];
         var mine = this.getMine();
+        var tiedMine = this.getTiedMine();
+        var tiedNotMine = this.getTiedZonesNotMine();
+        var losingZones = this.getZonesIAmLosing();
+        var exposedZones = this.getExposedZones();
+        Helpers.log("mine: " + mine.map(function (z) { return z.id; }).join('|'));
+        Helpers.log("tiedMine: " + tiedMine.map(function (z) { return z.id; }).join('|'));
+        Helpers.log("tiedNotMine: " + tiedNotMine.map(function (z) { return z.id; }).join('|'));
+        Helpers.log("losingZones: " + losingZones.map(function (z) { return z.id; }).join('|'));
+        Helpers.log("exposedZones: " + exposedZones.map(function (z) { return z.id; }).join('|'));
         // Protecting
-        if (mine.length > 0) {
-            mine.forEach(function (zone) {
-                var drone = _this.getClosestDrones(zone)[0];
-                requestedDrones.push(drone.id);
-                orders[drone.id] = _this.moveToZone(zone);
-            });
+        if (mine.length === this.zoneCount) {
+            this.protectDronesMultiPass(mine, requestedDrones, orders);
+        }
+        else {
+            this.protectDronesSinglePass(mine, requestedDrones, orders);
         }
         do {
-            var tiedMine = this.getTiedMine();
-            var tiedNotMine = this.getTiedZonesNotMine();
-            var losingZones = this.getZonesIAmLosing();
-            var exposedZones = this.getExposedZones();
             // Exposed
             if (exposedZones.length > 0) {
                 exposedZones.forEach(function (zone) {
@@ -286,6 +258,7 @@ var GameInformation = /** @class */ (function () {
                     }
                     if (drone) {
                         requestedDrones.push(drone.id);
+                        Helpers.log("Zone " + zone.id + " Requested: " + drone.id);
                         orders[drone.id] = _this.moveToZone(zone);
                     }
                 });
@@ -294,6 +267,7 @@ var GameInformation = /** @class */ (function () {
             if (tiedMine.length > 0) {
                 tiedMine.forEach(function (zone) {
                     var closestDrone = _this.getClosestAvailableDrone(zone)[0];
+                    Helpers.log("Zone " + zone.id + " Requested: " + closestDrone.id);
                     requestedDrones.push(closestDrone.id);
                     orders[closestDrone.id] = _this.moveToZone(closestDrone.currentZone);
                 });
@@ -316,6 +290,7 @@ var GameInformation = /** @class */ (function () {
                     if (drones.length > 0) {
                         requestedDrones.push.apply(requestedDrones, drones.map(function (d) { return d.id; }));
                         drones.forEach(function (drone) {
+                            Helpers.log("Zone " + zone.id + " Requested: " + drone.id);
                             orders[drone.id] = _this.moveToZone(zone);
                         });
                     }
@@ -339,6 +314,7 @@ var GameInformation = /** @class */ (function () {
                     if (drones.length > 0) {
                         requestedDrones.push.apply(requestedDrones, drones.map(function (d) { return d.id; }));
                         drones.forEach(function (drone) {
+                            Helpers.log("Zone " + zone.id + " Requested: " + drone.id);
                             orders[drone.id] = _this.moveToZone(zone);
                         });
                     }
@@ -386,6 +362,12 @@ var Helpers = /** @class */ (function () {
         var current = Helpers.calculateDistance(drone, zone);
         return previous - current;
     };
+    Helpers.log = function (message) {
+        if (this.debugMode) {
+            printErr(message);
+        }
+    };
+    Helpers.debugMode = true;
     return Helpers;
 }());
 var Point = /** @class */ (function () {
@@ -433,11 +415,12 @@ var Zone = /** @class */ (function (_super) {
 }(Point));
 var Drone = /** @class */ (function (_super) {
     __extends(Drone, _super);
-    function Drone(x, y, id) {
+    function Drone(x, y, id, master) {
         var _this = _super.call(this, x, y) || this;
         _this.currentZone = null;
         _this.id = null;
         _this.id = id;
+        _this.master = master;
         return _this;
     }
     return Drone;
@@ -448,12 +431,18 @@ var DroneTracking = /** @class */ (function () {
     return DroneTracking;
 }());
 var overlord = new GameInformation();
+Helpers.debugMode = true;
 // game loop
 while (true) {
     overlord.updateZoneControl();
     overlord.updateDroneTracking();
-    // const orders = overlord.goldStrategy();
-    // const orders = overlord.prioritizeAndMoveToEasiestZone();
     var orders = overlord.pointsAttracting();
     overlord.excecuteOrders(orders);
 }
+// someguy314
+//nbZones=4
+//nbDrones=5
+//gameSeed=1538891043141
+// nbZones=4
+// nbDrones=5
+// gameSeed=1538926129913
